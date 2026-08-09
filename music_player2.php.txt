@@ -1,0 +1,291 @@
+<?php
+// music_player.php - aligned closer to watch.php style
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
+ini_set('error_log', __DIR__ . '/php_errors.log');
+error_log("Starting music_player.php at " . date('Y-m-d H:i:s'));
+
+session_start();
+if (!isset($_SESSION['authenticated']) || $_SESSION['authenticated'] !== true) {
+    header('Location: index.php');
+    exit;
+}
+
+// ── Settings & Album Art function (unchanged) ───────────────────────────────────────
+$settingsFile = __DIR__ . '/settings.json';
+$settings = file_exists($settingsFile) ? json_decode(file_get_contents($settingsFile), true) : ['age_restriction' => false];
+$settings['age_restriction'] = $settings['age_restriction'] ?? false;
+
+function getAlbumArt($albumDir, $musicDir) {
+    if (!is_dir($musicDir . $albumDir)) return 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==';
+    $extensions = ['jpg', 'jpeg', 'png', 'webp'];
+    foreach ($extensions as $ext) {
+        $cover = $musicDir . $albumDir . '/cover.' . $ext;
+        if (file_exists($cover)) return 'music/' . ltrim($albumDir, '/\\') . '/cover.' . $ext . '?v=' . filemtime($cover);
+    }
+    $files = glob($musicDir . $albumDir . '/*.{jpg,jpeg,png,webp}', GLOB_BRACE);
+    if ($files) {
+        $f = $files[0];
+        return 'music/' . ltrim($albumDir, '/\\') . '/' . basename($f) . '?v=' . filemtime($f);
+    }
+    return 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==';
+}
+
+// ── Load & parse tracks (unchanged logic) ───────────────────────────────────────────
+$musicDir = __DIR__ . '/music/';
+$musicFiles = [];
+
+if (is_dir($musicDir) && is_readable($musicDir)) {
+    $iterator = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($musicDir, RecursiveDirectoryIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::LEAVES_ONLY
+    );
+    foreach ($iterator as $file) {
+        if (strtolower($file->getExtension()) !== 'mp3') continue;
+        $relPath = str_replace($musicDir, '', $file->getPathname());
+        $relPath = ltrim($relPath, '/\\');
+
+        $info = getMP3Info($file->getPathname()) ?: [
+            'title'  => pathinfo($file->getFilename(), PATHINFO_FILENAME),
+            'artist' => 'Unknown',
+            'album'  => 'Unknown',
+            'file'   => $relPath
+        ];
+        $info['file']     = $relPath;
+        $info['album_art']= getAlbumArt(dirname($relPath) ?: '', $musicDir);
+        $musicFiles[] = $info;
+    }
+    usort($musicFiles, fn($a,$b) => strcmp($a['title'], $b['title']));
+}
+
+// Unique artists & albums
+$artists = array_unique(array_column($musicFiles, 'artist')); sort($artists);
+$albums  = array_unique(array_column($musicFiles, 'album'));  sort($albums);
+
+// ── Filtering ───────────────────────────────────────────────────────────────────────
+$filterType  = null;
+$filterValue = null;
+if (isset($_GET['artist']) && in_array($_GET['artist'], $artists)) {
+    $filterType = 'artist'; $filterValue = $_GET['artist'];
+} elseif (isset($_GET['album']) && in_array($_GET['album'], $albums)) {
+    $filterType = 'album'; $filterValue = $_GET['album'];
+}
+
+$filteredTracks = $musicFiles;
+if ($filterType) {
+    $filteredTracks = array_filter($musicFiles, fn($m) => $m[$filterType] === $filterValue);
+}
+
+// ── Pagination ──────────────────────────────────────────────────────────────────────
+$tracksPerPage = 20;
+$page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+$offset = ($page - 1) * $tracksPerPage;
+$totalTracks = count($filteredTracks);
+$totalPages = max(1, ceil($totalTracks / $tracksPerPage));
+$pagedTracks = array_slice($filteredTracks, $offset, $tracksPerPage);
+
+// ── Selected track ──────────────────────────────────────────────────────────────────
+$track = isset($_GET['track']) ? $_GET['track'] : '';
+$allFiles = array_column($musicFiles, 'file');
+if (!$track || !in_array($track, $allFiles)) {
+    $track = $allFiles[0] ?? '';
+}
+$trackInfo = $track ? ($musicFiles[array_search($track, $allFiles)] ?? null) : null;
+
+// ── Logout ──────────────────────────────────────────────────────────────────────────
+if (isset($_GET['action']) && $_GET['action'] === 'logout') {
+    session_destroy();
+    setcookie('auth_token', '', time() - 3600, '/');
+    header('Location: index.php');
+    exit;
+}
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Music Player - <?= htmlspecialchars($trackInfo['title'] ?? 'No Track') ?></title>
+    <style>
+        /* ── Keep most of your original styles, only showing changed/added parts ── */
+        .library-container {
+            display: flex;
+            gap: 1.5rem;
+            padding: 1rem;
+        }
+        .filters-column {
+            width: 220px;
+            flex-shrink: 0;
+        }
+        .filters-column h3 {
+            font-size: 1rem;
+            color: #77aaff;
+            margin-bottom: 0.6rem;
+        }
+        .filters-column ul {
+            list-style: none;
+        }
+        .filters-column a {
+            display: block;
+            padding: 0.4rem 0.6rem;
+            color: #ddd;
+            border-radius: 4px;
+            margin-bottom: 0.25rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .filters-column a:hover,
+        .filters-column a.active {
+            background: #333366;
+            color: white;
+        }
+        .tracks-column {
+            flex: 1;
+        }
+        .track-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+            gap: 0.4rem;
+        }
+        /* ... keep your existing track-list, controls, etc. styles ... */
+        .pagination {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            margin: 1.5rem 0;
+        }
+        .pagination a {
+            padding: 0.5rem 1rem;
+            background: #444488;
+            color: white;
+            border-radius: 4px;
+            text-decoration: none;
+        }
+        .pagination a:hover { background: #5555aa; }
+        .pagination a.disabled {
+            background: #333366;
+            pointer-events: none;
+            opacity: 0.6;
+        }
+    </style>
+</head>
+<body>
+    <div class="navbar">
+        <div class="navbar-links">
+            <a href="watch.php">Videos</a>
+            <a href="music_player.php" class="active">Music</a>
+        </div>
+        <div class="navbar-buttons">
+            <a href="upload_all.php">Upload</a>
+            <a href="admin.php">Admin</a>
+            <a href="?action=logout">Sign Out</a>
+        </div>
+    </div>
+
+    <?php if (!isset($_SESSION['age_popup_shown']) && $settings['age_restriction']): ?>
+        <script>alert("This website is for 18+ only.");</script>
+        <?php $_SESSION['age_popup_shown'] = true; ?>
+    <?php endif; ?>
+
+    <div class="container">
+        <div class="main-content">
+            <div class="audio-player">
+                <div class="audio-wrapper">
+                    <?php if ($trackInfo): ?>
+                        <audio class="main-audio" autoplay>
+                            <source src="music/<?= rawurlencode($track) ?>" type="audio/mpeg">
+                        </audio>
+                        <div class="track-info">
+                            <img src="<?= htmlspecialchars($trackInfo['album_art']) ?>" alt="Album Art" class="album-art">
+                            <p class="song-name"><?= htmlspecialchars($trackInfo['title']) ?></p>
+                            <p class="artist">Artist: <?= htmlspecialchars($trackInfo['artist']) ?></p>
+                            <p class="album">Album: <?= htmlspecialchars($trackInfo['album']) ?></p>
+                        </div>
+                        <div class="controls">
+                            <button class="play-btn">▶</button>
+                            <button class="pause-btn" style="display:none;">❚❚</button>
+                            <div class="progress-container">
+                                <div class="progress-bar"><div class="progress"></div></div>
+                            </div>
+                            <input type="range" min="0" max="1" step="0.01" value="1" class="volume-slider">
+                        </div>
+                    <?php else: ?>
+                        <p class="error-message">No music files found.</p>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <div class="library-container">
+                <div class="filters-column">
+                    <h3>Artists</h3>
+                    <ul>
+                        <li><a href="music_player.php?page=1" class="<?= !$filterType ? 'active' : '' ?>">All</a></li>
+                        <?php foreach ($artists as $a): ?>
+                            <li><a href="?artist=<?= urlencode($a) ?>&page=1" class="<?= $filterType==='artist' && $filterValue===$a ? 'active' : '' ?>"><?= htmlspecialchars($a) ?></a></li>
+                        <?php endforeach; ?>
+                    </ul>
+
+                    <h3 style="margin-top:1.2rem;">Albums</h3>
+                    <ul>
+                        <li><a href="music_player.php?page=1" class="<?= !$filterType ? 'active' : '' ?>">All</a></li>
+                        <?php foreach ($albums as $alb): ?>
+                            <li><a href="?album=<?= urlencode($alb) ?>&page=1" class="<?= $filterType==='album' && $filterValue===$alb ? 'active' : '' ?>"><?= htmlspecialchars($alb) ?></a></li>
+                        <?php endforeach; ?>
+                    </ul>
+                </div>
+
+                <div class="tracks-column">
+                    <h3>Tracks <?= $filterType ? "({$filterType}: " . htmlspecialchars($filterValue) . ")" : "" ?> (Page <?= $page ?> of <?= $totalPages ?>)</h3>
+                    <input type="text" class="search-bar" placeholder="Search tracks...">
+
+                    <ul class="track-list">
+                        <?php foreach ($pagedTracks as $trk): ?>
+                            <li>
+                                <a href="?track=<?= rawurlencode($trk['file']) ?><?= $filterType ? '&'.$filterType.'='.urlencode($filterValue) : '' ?>&page=<?= $page ?>"
+                                   class="<?= $trk['file']===$track ? 'active' : '' ?>">
+                                    <img src="<?= htmlspecialchars($trk['album_art']) ?>" alt="Cover" onerror="this.src='data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=='">
+                                    <span class="track-name"><?= htmlspecialchars($trk['title']) ?></span>
+                                    <span class="track-meta"><?= htmlspecialchars($trk['artist']) ?> • <?= htmlspecialchars($trk['album']) ?></span>
+                                </a>
+                            </li>
+                        <?php endforeach; ?>
+                        <?php if (empty($pagedTracks)): ?>
+                            <li><p style="text-align:center; padding:2rem; color:#888;">No tracks found</p></li>
+                        <?php endif; ?>
+                    </ul>
+
+                    <div class="pagination">
+                        <?php if ($page > 1): ?>
+                            <a href="?page=<?= $page-1 ?><?= $filterType ? '&'.$filterType.'='.urlencode($filterValue) : '' ?><?= $track ? '&track='.rawurlencode($track) : '' ?>">Previous</a>
+                        <?php else: ?>
+                            <a href="#" class="disabled">Previous</a>
+                        <?php endif; ?>
+
+                        <?php if ($page < $totalPages): ?>
+                            <a href="?page=<?= $page+1 ?><?= $filterType ? '&'.$filterType.'='.urlencode($filterValue) : '' ?><?= $track ? '&track='.rawurlencode($track) : '' ?>">Next</a>
+                        <?php else: ?>
+                            <a href="#" class="disabled">Next</a>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Keep your original JS, just make sure search works on visible items -->
+    <script>
+    // ... your existing player controls, progress, volume, next-track fetch, etc. ...
+
+    // Search (only hide/show visible <li>)
+    document.querySelector('.search-bar')?.addEventListener('input', e => {
+        const q = e.target.value.toLowerCase();
+        document.querySelectorAll('.track-list li').forEach(li => {
+            const name = li.querySelector('.track-name')?.textContent.toLowerCase() || '';
+            const meta = li.querySelector('.track-meta')?.textContent.toLowerCase() || '';
+            li.style.display = (name.includes(q) || meta.includes(q)) ? '' : 'none';
+        });
+    });
+    </script>
+</body>
+</html>

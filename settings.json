@@ -1,0 +1,23 @@
+{
+    "active_view_count_enabled": true,
+    "video_view_count_enabled": true,
+    "youtube_enabled": false,
+    "youtube_channel_id": "",
+    "youtube_api_keys": [
+        ""
+    ],
+    "age_restriction": false,
+    "age_restriction_last_toggled": 1759475602,
+    "videos_enabled": true,
+    "settings_enabled": true,
+    "video_size_limit_mb": 100000,
+    "thumbnail_size_limit_mb": 100000,
+    "music_size_limit_mb": 100000,
+    "background_type": "image",
+    "background_file": "backgrounds\/background.jpg",
+    "spotify_enabled": false,
+    "admin_password_hash": "$2y$10$Yw5MtmICqRe2\/AiVOtbbFeEmmgwqGfEM3LFF7cyXPapNSFup296nW",
+    "site_password_hash": "$2y$10$VEg3l393cQ5Hj3qpsI3wmu2Kvq4u0rb8aC2fmmbg0DxKekF0hsHuu",
+    "require_login": false,
+    "discord_client_id": ""
+}
